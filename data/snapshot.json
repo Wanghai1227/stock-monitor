@@ -1,7 +1,7 @@
 {
-  "update_time": "2026-03-01T13:36:06.665586",
+  "update_time": "2026-03-01T13:47:10.918597",
   "total_stocks": 6,
-  "alert_count": 2,
+  "alert_count": 3,
   "data": {
     "002594": {
       "code": "002594",
@@ -27,29 +27,60 @@
       "score": -2,
       "trend": "弱势"
     },
-    "300750": {
-      "code": "300750",
-      "name": "宁德时代",
-      "date": "2026-02-27 00:00:00",
-      "price": 342.01,
-      "change_pct": -1.15,
-      "volume": 254466,
-      "ma5": 355.5,
-      "ma10": 362.42,
-      "ma20": 355.47,
-      "rsi": 44.8,
-      "macd": -1.8338,
+    "000333": {
+      "code": "000333",
+      "name": "美的集团",
+      "date": "2026-02-27 13:47:10.442253",
+      "price": 107.06,
+      "change_pct": 3.17,
+      "volume": 4352942,
+      "ma5": 103.72,
+      "ma10": 99.72,
+      "ma20": 96.8,
+      "rsi": 79.59,
+      "macd": 3.1544,
       "signals": [
         {
-          "type": "死叉",
-          "indicator": "MACD",
-          "desc": "MACD死叉，动能转弱",
-          "strength": "强",
-          "action": "卖出信号"
+          "type": "超买",
+          "indicator": "RSI",
+          "desc": "RSI=79.6，进入超买区间",
+          "strength": "中等",
+          "action": "注意回调"
+        },
+        {
+          "type": "突破上轨",
+          "indicator": "BOLL",
+          "desc": "股价突破布林带上轨，强势",
+          "strength": "中等",
+          "action": "持有/减仓"
         }
       ],
-      "score": -2,
-      "trend": "弱势"
+      "score": -1,
+      "trend": "震荡"
+    },
+    "600036": {
+      "code": "600036",
+      "name": "招商银行",
+      "date": "2026-02-27 13:47:10.906308",
+      "price": 134.25,
+      "change_pct": 1.55,
+      "volume": 7018158,
+      "ma5": 131.55,
+      "ma10": 130.31,
+      "ma20": 125.31,
+      "rsi": 81.84,
+      "macd": 0.7822,
+      "signals": [
+        {
+          "type": "超买",
+          "indicator": "RSI",
+          "desc": "RSI=81.8，进入超买区间",
+          "strength": "中等",
+          "action": "注意回调"
+        }
+      ],
+      "score": -1,
+      "trend": "震荡"
     }
   }
 }
