@@ -1,0 +1,28 @@
+name: Refresh Stock Data
+
+on:
+  schedule:
+    - cron: '*/15 1-7 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    - run: |
+        pip install -r requirements.txt
+        python scripts/build_data.py        
+      env:
+        IFIND_USER: ${{ secrets.IFIND_USER }}
+        IFIND_PASS: ${{ secrets.IFIND_PASS }}
+        FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+    - run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        git add data/ index.html
+        git diff --cached --quiet || (git commit -m "Update $(date +'%Y-%m-%d %H:%M')" && git push)        
+      continue-on-error: true
