@@ -55,24 +55,13 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
 
-          # 【修复1】加 --ignore-missing，文件不存在时静默跳过不报错
-          # 解决 state.json 等文件首次运行前不存在导致 exit 128 的问题
-          git add --ignore-missing \
-            data/signals.json \
-            data/latest_run.json \
-            data/state.json \
-            index.html
+          # 用 touch 预创建文件：文件已存在则不动，不存在则建空文件
+          # 这样 git add 永远不会因"文件不存在"而报错
+          touch data/signals.json data/latest_run.json data/state.json index.html
+          git add data/signals.json data/latest_run.json data/state.json index.html
 
           COMMIT_TIME=$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M CST')
 
-          # 【修复2】原版写法：
-          #   git diff --cached --quiet || git commit -m "..." && git push
-          # 因为 shell 里 && 优先级高于 ||，实际解析为：
-          #   git diff --cached --quiet || (git commit -m "..." && git push)
-          # 看起来没问题，但"无变更时"git diff 返回 0，
-          # 后面的 && git push 会被短路跳过——然而如果 commit 失败，
-          # push 也会被跳过且整体返回非零，导致 step 报红。
-          # 改用 if 判断，逻辑清晰且不依赖运算符优先级：
           if git diff --cached --quiet; then
             echo "✅ 无变更，跳过提交"
           else
