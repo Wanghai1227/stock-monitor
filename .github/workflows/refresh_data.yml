@@ -1,28 +1,86 @@
+# ============================================================
+# 股票监控数据刷新 Workflow
+# ============================================================
+
 name: Refresh Stock Data
 
 on:
   schedule:
+    # 【优化1】原版只有一条 cron，收盘后没有最终汇总
+    # A股交易时间 09:30~15:00 = UTC 01:30~07:00
+    # 每15分钟刷新一次（盘中）
     - cron: '*/15 1-7 * * 1-5'
+    # 【新增】15:05 收盘后跑一次完整汇总（UTC 07:05）
+    - cron: '5 7 * * 1-5'
+
+  # 保留手动触发
   workflow_dispatch:
+    # 【优化2】新增手动触发参数，方便调试时跳过交易日校验
+    inputs:
+      force_run:
+        description: '强制运行（忽略交易日校验）'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+# 【优化3】同一时间只允许一个实例运行，防止并发写入 data/ 导致冲突
+concurrency:
+  group: refresh-stock-data
+  cancel-in-progress: true
 
 jobs:
   update-data:
     runs-on: ubuntu-latest
+
+    # 【优化4】加超时保护，防止 akshare 卡住导致 Action 白白消耗额度
+    timeout-minutes: 10
+
     steps:
-    - uses: actions/checkout@v3
-    - uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
-    - run: |
-        pip install -r requirements.txt
-        python scripts/build_data.py        
-      env:
-        IFIND_USER: ${{ secrets.IFIND_USER }}
-        IFIND_PASS: ${{ secrets.IFIND_PASS }}
-        FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
-    - run: |
-        git config --local user.email "github-actions[bot]@users.noreply.github.com"
-        git config --local user.name "github-actions[bot]"
-        git add data/ index.html
-        git diff --cached --quiet || (git commit -m "Update $(date +'%Y-%m-%d %H:%M')" && git push)        
-      continue-on-error: true
+      # ── Step 1: 检出代码 ──────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4        # 【优化5】v3 → v4，官方已推荐升级
+
+      # ── Step 2: 配置 Python ───────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5   # 【优化5】同步升级到 v5
+        with:
+          python-version: '3.11'
+          # 【优化6】开启依赖缓存，pip install 从 ~30s 降到 ~3s
+          cache: 'pip'
+          cache-dependency-path: requirements.txt
+
+      # ── Step 3: 安装依赖 ──────────────────────────────────
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ── Step 4: 运行数据构建脚本 ──────────────────────────
+      - name: Build stock data
+        run: python scripts/build_data.py
+        env:
+          # 【优化7】删除 IFIND_USER / IFIND_PASS
+          # 项目已改用 akshare（免登录），保留这两行会在日志里产生
+          # "secret not found" 警告，且暴露曾用过 iFind 的信息
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          # 【新增】透传手动触发时的 force_run 参数
+          FORCE_RUN: ${{ github.event.inputs.force_run || 'false' }}
+
+      # ── Step 5: 提交并推送数据 ────────────────────────────
+      - name: Commit and push data
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+          # 【优化8】显式列出文件，避免 data/ 下的临时文件或调试文件被意外提交
+          git add data/signals.json data/latest_run.json data/state.json index.html
+
+          # 【优化9】提交信息加上 UTC+8 时间，方便在 GitHub 上直接看北京时间
+          COMMIT_TIME=$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M CST')
+          git diff --cached --quiet || \
+            git commit -m "data: update ${COMMIT_TIME}" && \
+            git push
+        # 【优化10】原版 continue-on-error: true 会掩盖真实错误
+        # 改为只在"nothing to commit"时静默，其他错误正常报红
+        continue-on-error: false
