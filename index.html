@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>股票技术指标监控</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+        }
+        .header h1 { font-size: 28px; margin-bottom: 10px; }
+        .header .time { opacity: 0.9; }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .stat-card {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        .stat-card .number { font-size: 32px; font-weight: bold; color: #667eea; }
+        .stat-card .label { color: #666; margin-top: 5px; }
+        .alerts-section { margin-bottom: 20px; }
+        .section-title {
+            font-size: 20px;
+            margin-bottom: 15px;
+            padding-left: 10px;
+            border-left: 4px solid #667eea;
+        }
+        .stock-card {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 15px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        }
+        .stock-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        .stock-name { font-size: 18px; font-weight: bold; }
+        .stock-code { color: #999; font-size: 14px; }
+        .stock-price {
+            text-align: right;
+        }
+        .price { font-size: 24px; font-weight: bold; }
+        .change { font-size: 14px; }
+        .change.up { color: #e74c3c; }
+        .change.down { color: #27ae60; }
+        .indicators {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+        .indicator {
+            background: #f8f9fa;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 13px;
+        }
+        .indicator span { color: #666; }
+        .signals {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .signal {
+            display: flex;
+            align-items: center;
+            padding: 10px 15px;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+        .signal.buy { background: #fff3f3; border-left: 3px solid #e74c3c; }
+        .signal.sell { background: #f0fff0; border-left: 3px solid #27ae60; }
+        .signal.neutral { background: #fffbf0; border-left: 3px solid #f39c12; }
+        .signal-icon { margin-right: 10px; font-size: 16px; }
+        .signal-content { flex: 1; }
+        .signal-type { font-weight: bold; margin-bottom: 2px; }
+        .signal-desc { color: #666; font-size: 12px; }
+        .signal-strength {
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .signal-strength.strong { background: #e74c3c; color: white; }
+        .signal-strength.medium { background: #f39c12; color: white; }
+        .trend-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .trend-badge.bull { background: #ffebee; color: #c62828; }
+        .trend-badge.bear { background: #e8f5e9; color: #2e7d32; }
+        .trend-badge.neutral { background: #fff3e0; color: #ef6c00; }
+        .no-signals {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📈 股票技术指标监控</h1>
+        <div class="time">更新时间：2026-03-01 12:46</div>
+    </div>
+    
+    <div class="stats">
+        <div class="stat-card">
+            <div class="number">6</div>
+            <div class="label">监控股票</div>
+        </div>
+        <div class="stat-card">
+            <div class="number">4</div>
+            <div class="label">今日信号</div>
+        </div>
+        <div class="stat-card">
+            <div class="number">0</div>
+            <div class="label">强势股票</div>
+        </div>
+    </div>
+    
+    <div class="alerts-section">
+        <h2 class="section-title">🔔 技术信号</h2>
+        
+        <div class="stock-card">
+            <div class="stock-header">
+                <div>
+                    <div class="stock-name">比亚迪 <span class="stock-code">002594</span></div>
+                    <span class="trend-badge neutral">震荡</span>
+                </div>
+                <div class="stock-price">
+                    <div class="price">¥107.25</div>
+                    <div class="change down">-0.05%</div>
+                </div>
+            </div>
+            <div class="indicators">
+                <div class="indicator">MA5: <span>105.28</span></div>
+                <div class="indicator">MA10: <span>103.37</span></div>
+                <div class="indicator">MA20: <span>102.79</span></div>
+                <div class="indicator">RSI: <span>58.46</span></div>
+                <div class="indicator">MACD: <span>1.2193</span></div>
+            </div>
+            <div class="signals">
+        
+
+                <div class="signal neutral">
+                    <span class="signal-icon">⚠️</span>
+                    <div class="signal-content">
+                        <div class="signal-type">[BOLL] 突破上轨</div>
+                        <div class="signal-desc">股价突破布林带上轨，强势</div>
+                    </div>
+                    <span class="signal-strength medium">中等</span>
+                </div>
+            
+</div></div>
+
+        <div class="stock-card">
+            <div class="stock-header">
+                <div>
+                    <div class="stock-name">美的集团 <span class="stock-code">000333</span></div>
+                    <span class="trend-badge neutral">震荡</span>
+                </div>
+                <div class="stock-price">
+                    <div class="price">¥107.06</div>
+                    <div class="change up">+3.17%</div>
+                </div>
+            </div>
+            <div class="indicators">
+                <div class="indicator">MA5: <span>103.72</span></div>
+                <div class="indicator">MA10: <span>99.72</span></div>
+                <div class="indicator">MA20: <span>96.8</span></div>
+                <div class="indicator">RSI: <span>79.59</span></div>
+                <div class="indicator">MACD: <span>3.1544</span></div>
+            </div>
+            <div class="signals">
+        
+
+                <div class="signal sell">
+                    <span class="signal-icon">📉</span>
+                    <div class="signal-content">
+                        <div class="signal-type">[RSI] 超买</div>
+                        <div class="signal-desc">RSI=79.6，进入超买区间</div>
+                    </div>
+                    <span class="signal-strength medium">中等</span>
+                </div>
+            
+
+                <div class="signal neutral">
+                    <span class="signal-icon">⚠️</span>
+                    <div class="signal-content">
+                        <div class="signal-type">[BOLL] 突破上轨</div>
+                        <div class="signal-desc">股价突破布林带上轨，强势</div>
+                    </div>
+                    <span class="signal-strength medium">中等</span>
+                </div>
+            
+</div></div>
+
+        <div class="stock-card">
+            <div class="stock-header">
+                <div>
+                    <div class="stock-name">招商银行 <span class="stock-code">600036</span></div>
+                    <span class="trend-badge neutral">震荡</span>
+                </div>
+                <div class="stock-price">
+                    <div class="price">¥134.25</div>
+                    <div class="change up">+1.55%</div>
+                </div>
+            </div>
+            <div class="indicators">
+                <div class="indicator">MA5: <span>131.55</span></div>
+                <div class="indicator">MA10: <span>130.31</span></div>
+                <div class="indicator">MA20: <span>125.31</span></div>
+                <div class="indicator">RSI: <span>81.84</span></div>
+                <div class="indicator">MACD: <span>0.7822</span></div>
+            </div>
+            <div class="signals">
+        
+
+                <div class="signal sell">
+                    <span class="signal-icon">📉</span>
+                    <div class="signal-content">
+                        <div class="signal-type">[RSI] 超买</div>
+                        <div class="signal-desc">RSI=81.8，进入超买区间</div>
+                    </div>
+                    <span class="signal-strength medium">中等</span>
+                </div>
+            
+</div></div>
+
+        <div class="stock-card">
+            <div class="stock-header">
+                <div>
+                    <div class="stock-name">五粮液 <span class="stock-code">000858</span></div>
+                    <span class="trend-badge bear">弱势</span>
+                </div>
+                <div class="stock-price">
+                    <div class="price">¥123.01</div>
+                    <div class="change down">-1.98%</div>
+                </div>
+            </div>
+            <div class="indicators">
+                <div class="indicator">MA5: <span>123.55</span></div>
+                <div class="indicator">MA10: <span>119.27</span></div>
+                <div class="indicator">MA20: <span>114.63</span></div>
+                <div class="indicator">RSI: <span>74.59</span></div>
+                <div class="indicator">MACD: <span>1.7327</span></div>
+            </div>
+            <div class="signals">
+        
+
+                <div class="signal sell">
+                    <span class="signal-icon">📉</span>
+                    <div class="signal-content">
+                        <div class="signal-type">[MA5] 回调</div>
+                        <div class="signal-desc">股价回调跌破5日均线</div>
+                    </div>
+                    <span class="signal-strength medium">中等</span>
+                </div>
+            
+
+                <div class="signal sell">
+                    <span class="signal-icon">📉</span>
+                    <div class="signal-content">
+                        <div class="signal-type">[RSI] 超买</div>
+                        <div class="signal-desc">RSI=74.6，进入超买区间</div>
+                    </div>
+                    <span class="signal-strength medium">中等</span>
+                </div>
+            
+</div></div>
+    </div>
+</body>
+</html>
