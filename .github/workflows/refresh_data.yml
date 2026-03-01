@@ -6,7 +6,21 @@ name: Refresh Stock Data
 
 on:
   schedule:
-    - cron: '*/15 1-7 * * 1-5'
+    # 修复：原版从 UTC 01:00（北京 09:00）开始，早于 A 股开盘时间 09:30
+    # 交易时段：09:30~11:30、13:00~15:00（北京时间）
+    # 对应 UTC：01:30~03:30、05:00~07:00
+
+    # 上午盘：09:30~11:30（UTC 01:30~03:30），每 15 分钟一次
+    - cron: '30,45 1 * * 1-5'
+    - cron: '0,15,30 2 * * 1-5'
+    - cron: '45 2 * * 1-5'
+    - cron: '0,15,30 3 * * 1-5'
+
+    # 下午盘：13:00~15:00（UTC 05:00~07:00），每 15 分钟一次
+    - cron: '0,15,30,45 5 * * 1-5'
+    - cron: '0,15,30,45 6 * * 1-5'
+
+    # 收盘后最后一次：15:05（UTC 07:05），抓收盘数据
     - cron: '5 7 * * 1-5'
 
   workflow_dispatch:
@@ -49,14 +63,11 @@ jobs:
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
           FORCE_RUN: ${{ github.event.inputs.force_run || 'false' }}
 
-      # ── Step 5: 提交并推送数据 ────────────────────────────
       - name: Commit and push data
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
 
-          # 用 touch 预创建文件：文件已存在则不动，不存在则建空文件
-          # 这样 git add 永远不会因"文件不存在"而报错
           touch data/signals.json data/latest_run.json data/state.json index.html
           git add data/signals.json data/latest_run.json data/state.json index.html
 
