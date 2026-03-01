@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 股票技术指标监控主脚本
-支持iFinD数据源
+支持akshare数据源
 """
 
 import os
@@ -73,61 +73,55 @@ def get_mock_data(code, days=60):
     data.set_index('date', inplace=True)
     return data
 
+def get_akshare_data(code, days=60):
+"""
+从akshare获取A股历史数据（真实数据）
+"""
+try:
+import akshare as ak
+import pandas as pd
+from datetime import datetime, timedelta
 
-def get_ifind_data(code, days=60):
-    """
-    从iFinD获取历史数据
-    需要安装ifindpy库并有有效账号
-    
-    安装：pip install ifindpy
-    """
-    try:
-        import ifindpy
-        
-        # 登录iFinD（使用环境变量）
-        username = os.getenv('IFIND_USER')
-        password = os.getenv('IFIND_PASS')
-        
-        if not username or not password:
-            print(f"⚠️ 未配置iFinD账号，使用模拟数据: {code}")
-            return get_mock_data(code, days)
-        
-        ifindpy.login(username, password)
-        
-        # 计算起始日期
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=days + 20)  # 多取一些用于计算均线
-        
-        # 获取历史行情
-        data = ifindpy.get_history_data(
-            code,
-            start_date=start_date.strftime('%Y%m%d'),
-            end_date=end_date.strftime('%Y%m%d'),
-            fields=['open', 'high', 'low', 'close', 'volume']
-        )
-        
-        if data is None or len(data) == 0:
-            print(f"⚠️ iFinD无数据，使用模拟数据: {code}")
-            return get_mock_data(code, days)
-        
-        # 确保列名正确
-        data = data.rename(columns={
-            'OPEN': 'open',
-            'HIGH': 'high',
-            'LOW': 'low',
-            'CLOSE': 'close',
-            'VOLUME': 'volume'
-        })
-        
-        print(f"✅ iFinD数据获取成功: {code}")
-        return data
-        
-    except ImportError:
-        print(f"⚠️ 未安装ifindpy，使用模拟数据: {code}")
-        return get_mock_data(code, days)
-    except Exception as e:
-        print(f"⚠️ iFinD获取失败({e})，使用模拟数据: {code}")
-        return get_mock_data(code, days)
+# 计算日期范围
+end_date = datetime.now()
+start_date = end_date - timedelta(days=days + 20)
+
+# 获取历史行情 - 前复权数据
+df = ak.stock_zh_a_hist(
+symbol=code,
+period="daily",
+start_date=start_date.strftime('%Y%m%d'),
+end_date=end_date.strftime('%Y%m%d'),
+adjust="qfq"
+)
+
+if df is None or len(df) == 0:
+print(f"⚠️ akshare无数据，使用模拟数据: {code}")
+return get_mock_data(code, days)
+
+# 重命名列以兼容原有代码
+df = df.rename(columns={
+'日期': 'date',
+'开盘': 'open',
+'收盘': 'close',
+'最高': 'high',
+'最低': 'low',
+'成交量': 'volume'
+})
+
+# 转换日期
+df['date'] = pd.to_datetime(df['date'])
+df.set_index('date', inplace=True)
+
+# 确保列名正确
+df = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
+
+print(f"✅ akshare数据获取成功: {code} ({len(df)}条)")
+return df
+
+except Exception as e:
+print(f"⚠️ akshare获取失败({e})，使用模拟数据: {code}")
+return get_mock_data(code, days)
 
 
 # ==================== 主流程 ====================
@@ -140,7 +134,7 @@ def analyze_stock(stock_info):
     print(f"\n📊 分析 {code} {name}...")
     
     # 获取数据
-    data = get_ifind_data(code, days=60)
+    data = get_akshare_data(code, days=60)
     
     if data is None or len(data) < 20:
         print(f"❌ 数据不足: {code}")
