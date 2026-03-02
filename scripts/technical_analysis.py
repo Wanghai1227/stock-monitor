@@ -83,29 +83,16 @@ def _parse_history_response(result: dict, fmt_code: str) -> pd.DataFrame:
     """
     解析 cmd_history_quotation 返回的 JSON。
 
-    iFinD 标准结构（手册）：
-      {
-        "errorcode": 0,
-        "tables": [
-          {
-            "thscode": "600519.SH",
-            "table": {
-              "time":   [...],
-              "open":   [...],
-              "high":   [...],
-              "low":    [...],
-              "close":  [...],
-              "volume": [...]
-            }
-          }
-        ]
-      }
+    已知 iFinD 实际返回结构（DEBUG 确认）：
+      tables 是 list，每个元素包含：
+        - thscode: str
+        - table:   dict  ← 只有最新一条聚合值（open/high/low/close/volume）
+        - 其他 key 可能含时间序列
 
-    兼容变体：
-      - tables 是 dict（旧版）
-      - table 是行列表而非列字典
-      - 字段名大小写不一致
-      - 时间字段名不是 time
+    本函数会：
+      1. 打印 stock_entry 所有顶层 key，帮助定位时间序列字段
+      2. 尝试从 table 构建（兼容列字典 / 行列表）
+      3. 若 table 无时间字段，尝试从 stock_entry 顶层其他 list 字段重建
     """
     errorcode = result.get("errorcode", -1)
     if errorcode != 0:
@@ -114,33 +101,17 @@ def _parse_history_response(result: dict, fmt_code: str) -> pd.DataFrame:
             f"{result.get('errmsg', '未知错误')}"
         )
 
-    # ── 工具函数 ────────────────────────────────────────────
-
+    # ── 工具：截断或补 None ─────────────────────────────────
     def _align(lst, n):
-        """截断或补 None，保证长度 == n"""
         lst = list(lst) if lst else []
         if len(lst) >= n:
             return lst[:n]
         return lst + [None] * (n - len(lst))
 
+    # ── 工具：从列字典构建 DataFrame ────────────────────────
     def _build_df_from_col_dict(col_dict: dict) -> pd.DataFrame:
-        """
-        从列字典构建 DataFrame，自动探测时间/收盘/成交量字段名。
-        兼容 iFinD 各版本返回的不同字段命名风格。
-        """
-        # 字段名全部转小写
         col_dict = {k.lower(): v for k, v in col_dict.items()}
 
-        # DEBUG：打印实际字段名及首个值，便于排查（确认正常后可删除）
-        print(
-            f"  🔍 [DEBUG] table keys & samples: "
-            + str({
-                k: (v[0] if isinstance(v, list) and v else v)
-                for k, v in list(col_dict.items())[:8]
-            })
-        )
-
-        # ── 探测时间列 ──────────────────────────────────────
         TIME_ALIASES = [
             "time", "date", "datetime", "trading_date",
             "tradedate", "trade_date", "tdate", "tradingday",
@@ -153,7 +124,7 @@ def _parse_history_response(result: dict, fmt_code: str) -> pd.DataFrame:
         )
 
         if time_key is None:
-            # 兜底：只取值为字符串列表的字段（时间值是字符串，价格是数字）
+            # 兜底：只取值为字符串列表的字段（时间是字符串，价格是数字）
             for k, v in col_dict.items():
                 if isinstance(v, list) and v and isinstance(v[0], str):
                     time_key = k
@@ -164,19 +135,13 @@ def _parse_history_response(result: dict, fmt_code: str) -> pd.DataFrame:
                     break
 
         if not time_key:
-            raise ValueError(
-                f"{fmt_code} 返回时间序列为空，"
-                f"实际字段及样本值: "
-                + str({
-                    k: (v[0] if isinstance(v, list) and v else v)
-                    for k, v in list(col_dict.items())[:6]
-                })
-            )
+            return None  # 调用方负责处理 None
 
         time_list = col_dict[time_key]
         n = len(time_list)
+        if n == 0:
+            return None
 
-        # ── 探测 close 列 ───────────────────────────────────
         CLOSE_ALIASES = [
             "close", "latest", "price", "close_price", "收盘价", "收盘",
         ]
@@ -185,7 +150,6 @@ def _parse_history_response(result: dict, fmt_code: str) -> pd.DataFrame:
             "close"
         )
 
-        # ── 探测 volume 列 ──────────────────────────────────
         VOL_ALIASES = [
             "volume", "vol", "turnovervolume", "turnover_volume",
             "成交量", "volume(手)", "volume(股)", "成交量(手)",
@@ -202,6 +166,20 @@ def _parse_history_response(result: dict, fmt_code: str) -> pd.DataFrame:
             "volume": _align(vol_data, n),
         })
 
+    # ── 工具：从 stock_entry 顶层重建列字典 ─────────────────
+    def _rebuild_from_entry(entry: dict) -> pd.DataFrame:
+        """
+        当 entry["table"] 里没有时间序列时，
+        尝试把 entry 顶层的 list 字段拼成列字典再解析。
+        """
+        col_dict = {}
+        for k, v in entry.items():
+            if isinstance(v, list) and len(v) > 1:
+                col_dict[k] = v
+        if not col_dict:
+            return None
+        return _build_df_from_col_dict(col_dict)
+
     # ── 定位 tables ─────────────────────────────────────────
     tables_raw = result.get("tables") or result.get("data")
 
@@ -216,7 +194,6 @@ def _parse_history_response(result: dict, fmt_code: str) -> pd.DataFrame:
                 stock_entry = item
                 break
 
-        # 单股查询时列表只有一条，直接取
         if stock_entry is None:
             if len(tables_raw) == 1 and isinstance(tables_raw[0], dict):
                 stock_entry = tables_raw[0]
@@ -229,41 +206,74 @@ def _parse_history_response(result: dict, fmt_code: str) -> pd.DataFrame:
                     f"返回列表中找不到 {fmt_code}，实际包含: {codes_found}"
                 )
 
-        # 标准结构：行情数据在 stock_entry["table"] 里（列字典）
+        # ── DEBUG：打印 stock_entry 所有顶层 key ────────────
+        print(f"  🔍 [DEBUG] stock_entry keys for {fmt_code}:")
+        for k, v in stock_entry.items():
+            if isinstance(v, list):
+                sample = v[0] if v else "[]"
+                print(f"       '{k}': list[{len(v)}]  首元素={sample}")
+            elif isinstance(v, dict):
+                inner_keys = list(v.keys())[:8]
+                inner_samples = {
+                    ik: (iv[0] if isinstance(iv, list) and iv else iv)
+                    for ik, iv in list(v.items())[:4]
+                }
+                print(f"       '{k}': dict  keys={inner_keys}  samples={inner_samples}")
+            else:
+                print(f"       '{k}': {type(v).__name__}  = {v}")
+        # ── END DEBUG ────────────────────────────────────────
+
         raw_table = stock_entry.get("table")
 
+        # ① table 是列字典
         if isinstance(raw_table, dict):
-            return _build_df_from_col_dict(raw_table)
+            df = _build_df_from_col_dict(raw_table)
+            if df is not None and not df.empty:
+                return df
+            # table 里没有时间序列 → 尝试从 entry 顶层重建
+            print(
+                f"  ⚠️  [{fmt_code}] table 无时间序列，"
+                f"尝试从 stock_entry 顶层 list 字段重建…"
+            )
+            df = _rebuild_from_entry(stock_entry)
+            if df is not None and not df.empty:
+                return df
 
+        # ② table 是行列表
         if isinstance(raw_table, list) and raw_table:
-            # 行列表：[{"time": "2024-01-02", "close": 10.5, ...}, ...]
             df = pd.DataFrame(raw_table)
             df.columns = [c.lower() for c in df.columns]
             if "time" in df.columns and "date" not in df.columns:
                 df = df.rename(columns={"time": "date"})
             if "vol" in df.columns and "volume" not in df.columns:
                 df = df.rename(columns={"vol": "volume"})
+            if "date" in df.columns and len(df) > 1:
+                return df
+
+        # ③ 降级：行情列直接挂在 stock_entry 上
+        df = _rebuild_from_entry(stock_entry)
+        if df is not None and not df.empty:
             return df
 
-        # 降级：行情列直接挂在 stock_entry 上（非标准）
-        entry_lower = {k.lower(): v for k, v in stock_entry.items()}
-        if any(a in entry_lower for a in ["time", "date", "datetime", "日期", "时间"]):
-            return _build_df_from_col_dict(stock_entry)
-
         raise ValueError(
-            f"{fmt_code} 的 table 字段为空或格式未知，"
-            f"stock_entry keys: {list(stock_entry.keys())}"
+            f"{fmt_code} 无法从返回数据中提取时间序列，"
+            f"stock_entry keys: {list(stock_entry.keys())}。"
+            f"请查看上方 [DEBUG] 输出确认数据结构。"
         )
 
     # ══ 形态 B：tables 是 dict（旧版格式）══════════════════
     if isinstance(tables_raw, dict):
         inner = tables_raw.get("table", {})
         if fmt_code in inner:
-            return _build_df_from_col_dict(inner[fmt_code])
+            df = _build_df_from_col_dict(inner[fmt_code])
+            if df is not None:
+                return df
 
         tables_lower = {k.lower(): v for k, v in tables_raw.items()}
         if any(a in tables_lower for a in ["time", "date", "datetime", "日期", "时间"]):
-            return _build_df_from_col_dict(tables_raw)
+            df = _build_df_from_col_dict(tables_raw)
+            if df is not None:
+                return df
 
         raise ValueError(
             f"返回数据中找不到 {fmt_code}，"
@@ -284,7 +294,6 @@ def get_stock_data(code, period="daily", count=120):
 
     fetch_count = count + 30
     end_date    = datetime.now()
-    # A股每年约250个交易日，2.8倍缓冲确保拉取足够数据
     day_buffer  = {"D": 2.8, "W": 12.0, "M": 45.0}.get(interval, 2.8)
     start_date  = end_date - timedelta(days=int(fetch_count * day_buffer) + 60)
 
@@ -432,7 +441,7 @@ def _safe_round(val, digits=2):
     try:
         if val is None or pd.isna(val):
             return None
-        return round(float(val), digits)
+        return round(float(val), 2)
     except Exception:
         return None
 
