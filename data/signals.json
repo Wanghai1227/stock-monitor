@@ -34,7 +34,7 @@
       "boll_lower": 112.92,
       "boll_width": 0.2418,
       "volume_confirmed": true,
-      "update_time": "2026-03-02T15:53:16.884216",
+      "update_time": "2026-03-02T16:31:20.282414",
       "price_history": [
         124.25,
         121.87,
@@ -92,7 +92,7 @@
     }
   ],
   "watchlist_count": 9,
-  "update_time": "2026-03-02T16:00:11.993033",
+  "update_time": "2026-03-02T16:37:17.416547",
   "is_last_trading": true,
   "note": ""
 }
