@@ -16,6 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from technical_analysis import (
     get_stock_data,
+    get_batch_stock_data,
     calculate_ma, calculate_macd, calculate_rsi,
     calculate_bollinger, calculate_kdj,
     check_signals,
@@ -160,20 +161,25 @@ def _build_push_text(name, symbol, alert, push_cfg):
     return "\n".join(lines)
 
 
-def process_stock(symbol, name, runtime_cfg, signals_cfg):
+def process_stock(symbol, name, runtime_cfg, signals_cfg, prefetched_df=None):
     """
     处理单只股票：拉数据 → 计算指标 → 检测信号 → 返回 alert dict
+    prefetched_df: 由 main() 批量预拉取后传入，传入时跳过 API 调用。
     失败时抛出异常，由 main() 统一捕获计入 fail_list。
     """
     print(f"  📈 处理 {name}({symbol}) ...")
 
-    # ── 读取运行时参数（全部来自 yaml.runtime）──────────────
+    # ── 读取运行时参数 ───────────────────────────────────────
     history_days        = runtime_cfg.get("history_days", 60)
     price_history_days  = runtime_cfg.get("price_history_days", 20)
     volume_history_days = runtime_cfg.get("volume_history_days", 20)
 
-    # ── 拉取行情数据 ─────────────────────────────────────────
-    df = get_stock_data(symbol, period="daily", count=history_days + 30)
+    # ── 使用预拉取数据，或回退到单只请求 ────────────────────
+    if prefetched_df is not None:
+        df = prefetched_df
+    else:
+        df = get_stock_data(symbol, period="daily", count=history_days + 30)
+
     if df is None or df.empty:
         raise ValueError(f"{name}({symbol}) 数据获取失败")
 
@@ -185,11 +191,10 @@ def process_stock(symbol, name, runtime_cfg, signals_cfg):
     df = calculate_kdj(df, fastk_period=9, signal_period=3)
 
     # ── 检测信号 ─────────────────────────────────────────────
-    # 把 symbol/name 注入 signals_cfg，让 check_signals 能正确填返回值
     cfg_for_check = {
         "symbol": symbol,
         "name":   name,
-        **signals_cfg,   # 展开 rsi / kdj / volume / boll 等阈值
+        **signals_cfg,
     }
     result = check_signals(df, cfg_for_check)
     if not result or not result.get("signals"):
@@ -198,12 +203,11 @@ def process_stock(symbol, name, runtime_cfg, signals_cfg):
     # ── 构建 alert 条目 ──────────────────────────────────────
     latest = df.iloc[-1]
 
-    # volume 列不一定存在（部分数据源缺失），做安全处理
     volume_history = []
     if "volume" in df.columns:
         volume_history = [
             int(v) for v in df["volume"].tail(volume_history_days).tolist()
-            if v == v  # 过滤 NaN（NaN != NaN）
+            if v == v
         ]
 
     alert = {
@@ -226,7 +230,6 @@ def process_stock(symbol, name, runtime_cfg, signals_cfg):
         "boll_width":       result.get("boll_width"),
         "volume_confirmed": result.get("volume_confirmed", False),
         "update_time":      now_cn().isoformat(),
-        # 取最近 N 天收盘价，供前端迷你折线图使用
         "price_history":    result.get("price_history") or [
             round(float(v), 2)
             for v in df["close"].tail(price_history_days).tolist()
@@ -242,19 +245,18 @@ def process_stock(symbol, name, runtime_cfg, signals_cfg):
 def main():
     cfg_all = load_config()
 
-    # ── 读取各配置节点（全部对齐 config.yaml 的真实 key）────
     runtime_cfg = cfg_all.get("runtime",  {})
     signals_cfg = cfg_all.get("signals",  {})
     push_cfg    = cfg_all.get("push",     {})
     output_cfg  = cfg_all.get("output",   {})
     watchlist   = cfg_all.get("watchlist", [])
 
-    # ── 读取过滤开关 ─────────────────────────────────────────
     throttle    = push_cfg.get("throttle_minutes", 60)
     strong_only = push_cfg.get("strong_signal_only", True)
     min_signals = signals_cfg.get("min_signal_count", 1)
     min_score   = signals_cfg.get("min_score", 1)
     pretty_json = output_cfg.get("pretty_json", True)
+    history_days = runtime_cfg.get("history_days", 60)
 
     data_dir = Path(__file__).parent.parent / output_cfg.get("data_dir", "data")
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -271,7 +273,7 @@ def main():
         if signals_path.exists():
             try:
                 with open(signals_path, "r", encoding="utf-8") as f:
-                    json.load(f)   # 只做合法性校验
+                    json.load(f)
                 print("  ✅ 已有历史数据，保持原文件不变")
                 write_run_summary(ok=[], fail=[], note="non-trading-day",
                                   pretty=pretty_json)
@@ -287,14 +289,27 @@ def main():
         write_run_summary(ok=[], fail=[], note="empty-watchlist", pretty=pretty_json)
         return
 
+    # ── 批量预拉取所有股票数据（1 次 API 调用）──────────────
     print(f"\n🚀 开始处理 {len(watchlist)} 只股票...\n")
+
+    codes = [
+        stock.get("code") or stock.get("symbol", "")
+        for stock in watchlist
+        if stock.get("code") or stock.get("symbol")
+    ]
+    print(f"  🌐 批量预拉取 {len(codes)} 只股票数据...")
+    data_map = get_batch_stock_data(
+        codes,
+        period="daily",
+        count=history_days + 30,
+    )
+    print(f"  ✅ 预拉取完成，成功 {len(data_map)}/{len(codes)} 只\n")
 
     ok_list   = []
     fail_list = []
     alerts    = []
 
     for stock in watchlist:
-        # config.yaml 里 watchlist 条目用 "code"，兼容旧版 "symbol"
         symbol = stock.get("code") or stock.get("symbol", "")
         name   = stock.get("name", symbol)
 
@@ -303,11 +318,13 @@ def main():
             continue
 
         try:
-            alert = process_stock(symbol, name, runtime_cfg, signals_cfg)
+            # 从预拉取结果里取，取不到则传 None 让 process_stock 自行回退
+            prefetched_df = data_map.get(symbol)
+            alert = process_stock(
+                symbol, name, runtime_cfg, signals_cfg,
+                prefetched_df=prefetched_df,
+            )
             ok_list.append(symbol)
-
-            # iFinD API 调用间隔控制
-            time.sleep(1)
 
             if not alert:
                 print(f"    — {name}: 无信号")
@@ -359,9 +376,6 @@ def main():
             print(f"    ❌ {name}({symbol}) 处理异常: {e}")
             import traceback
             traceback.print_exc()
-            
-            # 出错后 also 休息
-            time.sleep(1)
 
     # ── 写入结果文件 ─────────────────────────────────────────
     is_last = now_cn().hour >= 15
