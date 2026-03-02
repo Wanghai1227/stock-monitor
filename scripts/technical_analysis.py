@@ -14,31 +14,20 @@
   P2-8  get_stock_data      重试延迟太短（3/8/15s），改为 15/30/60s
   P2-9  _safe_round         NaN 判断改用 pd.isna()，跨平台更稳健
   P2-10 check_signals       date 字段统一格式为 YYYY-MM-DD 字符串
+
+数据源：iFinD HTTP API（替代 akshare）
 """
 
 import time
 import pandas as pd
 import numpy as np
-import os
-import requests
-from ths_auth import THSAuthManager  # 引入我们刚上传的文件
-
-# 从 GitHub 环境变量中安全读取 Token
-REFRESH_TOKEN = os.environ.get("THS_REFRESH_TOKEN")
-
-# 初始化管理器
-auth_manager = None
-if REFRESH_TOKEN:
-    auth_manager = THSAuthManager(REFRESH_TOKEN)
-else:
-    print("⚠️ 未找到同花顺 Token，请检查 GitHub Secrets 配置！")
 
 
 # ==================== 数据获取 ====================
 
 def get_stock_data(code, period="daily", count=120):
     """
-    从同花顺 API 获取 A 股历史数据（带重试机制）
+    从 iFinD 获取 A 股历史数据（带重试机制）
 
     Args:
         code:   str,  股票代码
@@ -48,77 +37,47 @@ def get_stock_data(code, period="daily", count=120):
     Returns:
         DataFrame with OHLCV data，index 为 date（pd.DatetimeIndex）
     """
+    from ifind_data import get_ifind_client, _format_stock_code
     from datetime import datetime, timedelta
-
+    
+    # 转换股票代码格式
+    formatted_code = _format_stock_code(code)
+    
+    # 计算日期范围
     fetch_count = count + 30
     end_date    = datetime.now()
     start_date  = end_date - timedelta(days=int(fetch_count / 0.7) + 60)
-
-    # 同花顺接口通常需要 YYYY-MM-DD 格式
+    
     start_str = start_date.strftime('%Y-%m-%d')
     end_str   = end_date.strftime('%Y-%m-%d')
 
     MAX_RETRIES  = 3
-    # 同花顺企业级接口很稳定，重试延迟可以缩短
-    RETRY_DELAYS = [5, 10, 20]
+    RETRY_DELAYS = [3, 8, 15]
     last_error   = None
     df           = None
 
+    client = get_ifind_client()
+
     for attempt in range(MAX_RETRIES):
         try:
-            if not auth_manager:
-                raise ValueError("同花顺 Token 管理器未初始化，无法获取数据")
-
-            # 1. 获取有效的 access_token
-            access_token = auth_manager.get_token()
+            # 转换周期格式
+            period_map = {"daily": "D", "weekly": "W", "monthly": "M"}
+            ifind_period = period_map.get(period, "D")
             
-            # 2. 组装请求头
-            headers = {
-                "access_token": access_token,
-                "Content-Type": "application/json"
-            }
-            
-            # 3. 组装请求参数 (使用同花顺 iFinD 历史数据接口)
-            url = "https://quantapi.10jqka.com.cn/api/v1/get_history_data"
-            
-            payload = {
-                "codes": code,
-                "indicators": "open,high,low,close,volume",
-                "start_date": start_str,
-                "end_date": end_str,
-                "period": "D" if period == "daily" else "W",
-                "adjust": "qfq"  # 前复权
-            }
-
-            # 4. 发送请求
-            response = requests.post(url, headers=headers, json=payload, timeout=10)
-            response.raise_for_status()
-            res_data = response.json()
-            
-            if res_data.get("errorcode") != 0:
-                raise RuntimeError(f"同花顺API报错: {res_data.get('errmsg')}")
-                
-            # 5. 解析数据为 DataFrame
-            stock_data = res_data.get("data", {}).get(code, {})
-            if not stock_data or 'dates' not in stock_data:
-                raise ValueError(f"同花顺未返回 {code} 的有效数据")
-                
-            df = pd.DataFrame({
-                'date': stock_data.get('dates', []),
-                'open': stock_data.get('open', []),
-                'high': stock_data.get('high', []),
-                'low': stock_data.get('low', []),
-                'close': stock_data.get('close', []),
-                'volume': stock_data.get('volume', [])
-            })
-            
+            df = client.get_dp(
+                code=formatted_code,
+                indicators="close,open,high,low,volume",
+                start_date=start_str,
+                end_date=end_str,
+                period=ifind_period
+            )
             break
 
         except Exception as e:
             last_error = e
             if attempt < MAX_RETRIES - 1:
                 wait = RETRY_DELAYS[attempt]
-                print(f"  ⚠️  {code} 第{attempt + 1}次请求同花顺失败，{wait}s 后重试... ({e})")
+                print(f"  ⚠️  {code} 第{attempt + 1}次请求失败，{wait}s 后重试... ({e})")
                 time.sleep(wait)
             else:
                 raise RuntimeError(
@@ -132,10 +91,6 @@ def get_stock_data(code, period="daily", count=120):
         raise ValueError(f"数据严重不足 {code}: 仅 {len(df)} 条，无法计算指标")
     if len(df) < 60:
         print(f"  ⚠️  {code} 数据较少({len(df)}条)，MA60/长周期指标精度下降")
-
-    df['date'] = pd.to_datetime(df['date'])
-    df = df.sort_values('date').reset_index(drop=True)
-    df.set_index('date', inplace=True)
 
     available = [c for c in ['open', 'high', 'low', 'close', 'volume'] if c in df.columns]
     df = df[available].astype(float)
@@ -193,6 +148,14 @@ def calculate_rsi(data, period=14):
 def calculate_bollinger(data, window=None, num_std=None, period=None, std_dev=None):
     """
     计算布林带（含宽度和 %B）
+
+    修复 P1-3：原版 window=20、num_std=2.0 有默认值，导致兼容别名
+    period/std_dev 的条件 `window is not None` 永远为 True，别名完全失效。
+    新版四个参数默认值全部改为 None，优先级：window > period > 20。
+
+    参数：
+        window / period:   均线窗口期，默认 20
+        num_std / std_dev: 标准差倍数，默认 2.0
     """
     effective_window = window  or period  or 20
     effective_std    = num_std or std_dev or 2.0
@@ -214,6 +177,15 @@ def calculate_bollinger(data, window=None, num_std=None, period=None, std_dev=No
 def calculate_kdj(data, fastk_period=None, signal_period=None, n=None, m1=None, m2=None):
     """
     计算 KDJ 指标
+
+    修复 P1-4：原版 fastk_period=9、signal_period=3 有默认值，
+    导致兼容别名 n/m1/m2 永远不生效，与 calculate_bollinger 同类问题。
+    新版五个参数默认值全部改为 None。
+
+    参数：
+        fastk_period / n:    RSV 窗口期，默认 9
+        signal_period / m1:  K 线平滑周期，默认 3
+        m2:                  D 线平滑周期，默认与 m1 相同
     """
     effective_n  = fastk_period  or n  or 9
     effective_m1 = signal_period or m1 or 3
@@ -236,11 +208,15 @@ def calculate_kdj(data, fastk_period=None, signal_period=None, n=None, m1=None, 
 def volume_confirm(df, n=20, ratio=1.5):
     """
     检查最新一根 K 线是否放量
+
+    修复 P1-5：数据不足时原版静默返回 False 无任何提示，
+    补充 print 警告，方便排查数据问题。
     """
     if 'volume' not in df.columns or len(df) < 2:
         return False
 
     if len(df) < n + 1:
+        # 数据不足以计算 n 日均量，降级用现有数据，并给出提示
         print(f"  ⚠️  volume_confirm: 数据仅 {len(df)} 条，不足 {n+1} 条，均量精度下降")
         avg_vol = df['volume'].iloc[:-1].mean()
     else:
@@ -255,6 +231,9 @@ def volume_confirm(df, n=20, ratio=1.5):
 def _safe_round(val, digits=2):
     """
     统一处理 NaN / None 的安全取整
+
+    修复 P2-9：原版用 isinstance(val, float) and np.isnan(val)，
+    np.float64 在部分环境下不被识别为 Python float，改用 pd.isna() 更稳健。
     """
     try:
         if val is None or pd.isna(val):
@@ -266,7 +245,8 @@ def _safe_round(val, digits=2):
 
 def _safe_int_volume(val):
     """
-    安全地将成交量转为 int
+    修复 P0-2：安全地将成交量转为 int。
+    原版直接 int(latest['volume'])，当值为 NaN 时抛 ValueError。
     """
     try:
         if val is None or pd.isna(val):
@@ -281,7 +261,15 @@ def _safe_int_volume(val):
 def check_signals(data, cfg_or_code=None, name=None, config=None):
     """
     检查交易信号
+
+    调用方式（两种均支持）：
+        check_signals(df, cfg_dict)           ← build_data.py 的调用方式
+        check_signals(df, "600519", "贵州茅台") ← 旧版调用方式
+
+    Returns:
+        dict（有信号时）或 None（无信号时）
     """
+    # ── 兼容两种调用方式 ─────────────────────────────────────
     if isinstance(cfg_or_code, dict):
         cfg  = cfg_or_code
         code = cfg.get("symbol", "")
@@ -290,6 +278,7 @@ def check_signals(data, cfg_or_code=None, name=None, config=None):
         code = cfg_or_code or ""
         cfg  = config or {}
 
+    # ── 读取阈值（兼容两种 config 结构）─────────────────────
     def _get(flat_key, nested_section, nested_key, default):
         if flat_key in cfg:
             return cfg[flat_key]
@@ -323,6 +312,7 @@ def check_signals(data, cfg_or_code=None, name=None, config=None):
             })
             score += 2 if vol_ok else 1
 
+    # 均线多头 / 空头排列
     ma_cols = ['MA5', 'MA10', 'MA20']
     if all(c in data.columns for c in ma_cols):
         if latest['MA5'] > latest['MA10'] > latest['MA20']:
@@ -347,7 +337,7 @@ def check_signals(data, cfg_or_code=None, name=None, config=None):
     # ── 2. MACD 金叉 / 死叉 ──────────────────────────────────
     if all(c in data.columns for c in ['DIF', 'DEA', 'MACD']):
         if not pd.isna(prev['DIF']) and not pd.isna(prev['DEA']):
-            macd_cross_happened = False
+            macd_cross_happened = False  # 修复 P1-7：互斥标记，防止金叉和柱翻红同日重复计分
 
             if prev['DIF'] < prev['DEA'] and latest['DIF'] > latest['DEA']:
                 above_zero = latest['DIF'] > 0
@@ -373,6 +363,8 @@ def check_signals(data, cfg_or_code=None, name=None, config=None):
                 score -= 2 if below_zero else 1
                 macd_cross_happened = True
 
+            # 修复 P1-7：只有在没有发生金叉/死叉时才单独统计柱翻红/翻绿
+            # 金叉当天必然伴随柱翻红，两者描述同一事件，不应重复计分
             if not macd_cross_happened:
                 if not pd.isna(prev['MACD']) and not pd.isna(latest['MACD']):
                     if prev['MACD'] < 0 and latest['MACD'] >= 0:
@@ -438,6 +430,7 @@ def check_signals(data, cfg_or_code=None, name=None, config=None):
                 })
                 score -= 1
 
+            # %B 回归（超卖后反弹）
             if not pd.isna(prev['BOLL_PCT_B']) and not pd.isna(latest['BOLL_PCT_B']):
                 if prev['BOLL_PCT_B'] < 0.05 and latest['BOLL_PCT_B'] >= 0.05:
                     signals.append({
@@ -496,6 +489,9 @@ def check_signals(data, cfg_or_code=None, name=None, config=None):
     if not signals:
         return None
 
+    # ── 趋势判定（五档）──────────────────────────────────────
+    # 修复 P1-5（趋势判定）：原版 score=±1 全归震荡，信息丢失。
+    # 新版细化为七档，±1 分别对应"轻微偏强/偏弱"。
     if score >= 4:
         trend = '强势'
     elif score >= 2:
@@ -518,12 +514,14 @@ def check_signals(data, cfg_or_code=None, name=None, config=None):
         2
     )
 
+    # 修复 P2-10：date 字段统一输出 YYYY-MM-DD 字符串，不受 index 类型影响
     if hasattr(latest.name, 'strftime'):
         date_str = latest.name.strftime('%Y-%m-%d')
     else:
         date_str = str(latest.name)[:10]
 
     return {
+        # 双写字段：兼容 build_data.py（symbol/close）和旧前端（code/price）
         'symbol':           code,
         'code':             code,
         'name':             name,
@@ -531,6 +529,7 @@ def check_signals(data, cfg_or_code=None, name=None, config=None):
         'close':            close_price,
         'price':            close_price,
         'change_pct':       change_pct,
+        # 修复 P0-2：用 _safe_int_volume() 替代裸 int()，NaN 时返回 0 而非崩溃
         'volume':           _safe_int_volume(latest.get('volume', None)),
         'ma5':              _safe_round(latest.get('MA5'),        2),
         'ma10':             _safe_round(latest.get('MA10'),       2),
@@ -550,6 +549,7 @@ def check_signals(data, cfg_or_code=None, name=None, config=None):
         'score':            score,
         'trend':            trend,
         'volume_confirmed': volume_confirm(data, ratio=vol_ratio),
+        # 修复 P1-6：用 pd.notna() 过滤 NaN，兼容 np.float64，避免 JSON 序列化报错
         'price_history':    [
             round(float(v), 2)
             for v in data['close'].tail(30).tolist()

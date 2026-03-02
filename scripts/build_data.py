@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 股票技术指标监控主脚本
-使用 akshare 开源数据源，支持配置化、重试机制、推送节流
+使用 iFinD HTTP API 数据源，支持配置化、重试机制、推送节流
 """
 
 import os
@@ -31,19 +31,10 @@ def load_config(path="configs/config.yaml"):
 
 
 def is_trading_day(check_date=None):
-    """优先用 akshare 交易日历接口，失败时降级到本地节假日规则。"""
-    # 👇 修复：统一使用北京时间
+    """使用本地节假日规则判断交易日。"""
     target = check_date or now_cn().date()
     if target.weekday() >= 5:
         return False
-    try:
-        import akshare as ak
-        import pandas as pd
-        trade_cal = ak.tool_trade_date_hist_sina()
-        trade_dates = pd.to_datetime(trade_cal["trade_date"]).dt.date.tolist()
-        return target in trade_dates
-    except Exception:
-        pass
         
     holidays = {
         # 2025
@@ -62,7 +53,6 @@ def is_trading_day(check_date=None):
 def get_last_real_trading_date():
     """自动往前找最近一个真实交易日（最多回溯 7 天）。"""
     for i in range(1, 8):
-        # 👇 修复：统一使用北京时间
         candidate = now_cn().date() - timedelta(days=i)
         if is_trading_day(candidate):
             return candidate
@@ -316,8 +306,8 @@ def main():
             alert = process_stock(symbol, name, runtime_cfg, signals_cfg)
             ok_list.append(symbol)
 
-            # 👇 新增 1：成功获取完一只股票的数据后，强制程序休息 3 秒
-            time.sleep(3)
+            # iFinD API 调用间隔控制
+            time.sleep(1)
 
             if not alert:
                 print(f"    — {name}: 无信号")
@@ -370,8 +360,8 @@ def main():
             import traceback
             traceback.print_exc()
             
-            # 👇 新增 2：即使被拦截报错了，也要强制休息 3 秒，避免疯狂重试彻底激怒服务器
-            time.sleep(3)
+            # 出错后 also 休息
+            time.sleep(1)
 
     # ── 写入结果文件 ─────────────────────────────────────────
     is_last = now_cn().hour >= 15
@@ -393,10 +383,6 @@ def main():
 
     print(f"\n{'✅' if not fail_list else '⚠️ '} 完成："
           f"{len(ok_list)} 成功，{len(fail_list)} 失败，{len(alerts)} 个信号写入")
-
-    # 👇 优化建议：把下面这两行注释掉或删掉
-    # if fail_list:
-    #     sys.exit(1)
 
 
 if __name__ == "__main__":
