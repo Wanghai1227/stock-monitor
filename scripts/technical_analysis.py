@@ -12,7 +12,7 @@ import numpy as np
 from datetime import datetime, timedelta
 
 
-# ==================== iFinD HTTP 客户端（内聚在本文件）====================
+# ==================== iFinD HTTP 客户端 ====================
 
 _BASE_URL    = "https://quantapi.51ifind.com/api/v1"
 _TOKEN_CACHE = {"access_token": None, "expires_at": 0}
@@ -77,11 +77,13 @@ def _fmt_code(code: str) -> str:
     return f"{code}.SZ"
 
 
+# ==================== 解析 iFinD 返回结构 ====================
+
 def _parse_history_response(result: dict, fmt_code: str) -> pd.DataFrame:
     """
     解析 cmd_history_quotation 返回的 JSON。
 
-    iFinD 标准结构（手册第4页）：
+    iFinD 标准结构（手册）：
       {
         "errorcode": 0,
         "tables": [
@@ -99,10 +101,11 @@ def _parse_history_response(result: dict, fmt_code: str) -> pd.DataFrame:
         ]
       }
 
-    兼容以下变体：
+    兼容变体：
       - tables 是 dict（旧版）
       - table 是行列表而非列字典
       - 字段名大小写不一致
+      - 时间字段名不是 time
     """
     errorcode = result.get("errorcode", -1)
     if errorcode != 0:
@@ -110,6 +113,8 @@ def _parse_history_response(result: dict, fmt_code: str) -> pd.DataFrame:
             f"iFinD 接口错误 (errorcode={errorcode}): "
             f"{result.get('errmsg', '未知错误')}"
         )
+
+    # ── 工具函数 ────────────────────────────────────────────
 
     def _align(lst, n):
         """截断或补 None，保证长度 == n"""
@@ -120,33 +125,67 @@ def _parse_history_response(result: dict, fmt_code: str) -> pd.DataFrame:
 
     def _build_df_from_col_dict(col_dict: dict) -> pd.DataFrame:
         """
-        从列字典构建 DataFrame。
-        col_dict 形如 {"time": [...], "open": [...], ...}
-        字段名自动转小写，volume 兼容 vol 别名。
+        从列字典构建 DataFrame，自动探测时间/收盘/成交量字段名。
+        兼容 iFinD 各版本返回的不同字段命名风格。
         """
         # 字段名全部转小写
         col_dict = {k.lower(): v for k, v in col_dict.items()}
 
-        time_list = col_dict.get("time", [])
-        if not time_list:
-            raise ValueError(f"{fmt_code} 返回时间序列为空")
+        # ── 探测时间列 ──────────────────────────────────────
+        TIME_ALIASES = [
+            "time", "date", "datetime", "trading_date",
+            "tradedate", "trade_date", "tdate", "日期"
+        ]
+        time_key = next(
+            (a for a in TIME_ALIASES if col_dict.get(a)),
+            None
+        )
+        if time_key is None:
+            # 兜底：取第一个非空 list 字段
+            time_key = next(
+                (k for k, v in col_dict.items() if isinstance(v, list) and v),
+                None
+            )
+            if time_key:
+                print(f"  ⚠️  [WARN] 未找到标准时间字段，fallback 使用 '{time_key}'")
+
+        if not time_key:
+            raise ValueError(
+                f"{fmt_code} 返回时间序列为空，"
+                f"实际字段: {list(col_dict.keys())}"
+            )
+
+        time_list = col_dict[time_key]
         n = len(time_list)
 
-        # volume 兼容 vol 别名
-        vol = col_dict.get("volume") or col_dict.get("vol") or []
+        # ── 探测 close 列 ───────────────────────────────────
+        CLOSE_ALIASES = ["close", "latest", "price", "close_price", "收盘价"]
+        close_key = next(
+            (a for a in CLOSE_ALIASES if col_dict.get(a)),
+            "close"
+        )
+
+        # ── 探测 volume 列 ──────────────────────────────────
+        VOL_ALIASES = [
+            "volume", "vol", "turnovervolume", "turnover_volume",
+            "成交量", "volume(手)", "volume(股)"
+        ]
+        vol_key  = next((a for a in VOL_ALIASES if col_dict.get(a)), None)
+        vol_data = col_dict.get(vol_key, []) if vol_key else []
 
         return pd.DataFrame({
             "date":   time_list,
-            "open":   _align(col_dict.get("open",  []), n),
-            "high":   _align(col_dict.get("high",  []), n),
-            "low":    _align(col_dict.get("low",   []), n),
-            "close":  _align(col_dict.get("close", []), n),
-            "volume": _align(vol,                       n),
+            "open":   _align(col_dict.get("open", []), n),
+            "high":   _align(col_dict.get("high", []), n),
+            "low":    _align(col_dict.get("low",  []), n),
+            "close":  _align(col_dict.get(close_key, []), n),
+            "volume": _align(vol_data, n),
         })
 
+    # ── 定位 tables ─────────────────────────────────────────
     tables_raw = result.get("tables") or result.get("data")
 
-    # ── 形态 A：tables 是 list（手册标准格式）────────────────
+    # ══ 形态 A：tables 是 list（手册标准格式）══════════════
     if isinstance(tables_raw, list):
         # 找到匹配 fmt_code 的条目
         stock_entry = None
@@ -188,7 +227,8 @@ def _parse_history_response(result: dict, fmt_code: str) -> pd.DataFrame:
             return df
 
         # 降级：行情列直接挂在 stock_entry 上（非标准）
-        if "time" in stock_entry or "TIME" in stock_entry:
+        entry_lower = {k.lower(): v for k, v in stock_entry.items()}
+        if any(a in entry_lower for a in ["time", "date", "datetime", "日期"]):
             return _build_df_from_col_dict(stock_entry)
 
         raise ValueError(
@@ -196,7 +236,7 @@ def _parse_history_response(result: dict, fmt_code: str) -> pd.DataFrame:
             f"stock_entry keys: {list(stock_entry.keys())}"
         )
 
-    # ── 形态 B：tables 是 dict（旧版格式）────────────────────
+    # ══ 形态 B：tables 是 dict（旧版格式）══════════════════
     if isinstance(tables_raw, dict):
         # 旧版：{"table": {"600519.SH": {"time": [...], ...}}}
         inner = tables_raw.get("table", {})
@@ -204,7 +244,8 @@ def _parse_history_response(result: dict, fmt_code: str) -> pd.DataFrame:
             return _build_df_from_col_dict(inner[fmt_code])
 
         # 有时 tables 本身就是列字典
-        if "time" in tables_raw or "TIME" in tables_raw:
+        tables_lower = {k.lower(): v for k, v in tables_raw.items()}
+        if any(a in tables_lower for a in ["time", "date", "datetime", "日期"]):
             return _build_df_from_col_dict(tables_raw)
 
         raise ValueError(
@@ -280,7 +321,7 @@ def get_stock_data(code, period="daily", count=120):
 
     cols = [c for c in ["open", "high", "low", "close", "volume"] if c in df.columns]
     df   = df[cols].apply(pd.to_numeric, errors="coerce")
-    df   = df.dropna(subset=["close"])          # 只要 close 有值就保留
+    df   = df.dropna(subset=["close"])
 
     if df.empty:
         raise ValueError(f"❌ [{code}] 清洗后数据为空，请检查代码或日期范围")
