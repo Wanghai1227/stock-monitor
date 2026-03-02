@@ -6,7 +6,6 @@
 
 import os
 import time
-import json
 import requests
 import pandas as pd
 import numpy as np
@@ -81,14 +80,7 @@ def _fmt_code(code: str) -> str:
 def _parse_history_response(result: dict, fmt_code: str) -> pd.DataFrame:
     """
     解析 cmd_history_quotation 返回的 JSON。
-
-    iFinD 实际返回的 tables 字段有两种形态：
-      形态 A（dict）: {"table": {"600519.SH": {"time":[...], "close":[...], ...}}}
-      形态 B（list）: [{"thscode": "600519.SH", "time":[...], "close":[...], ...}]
-                   或 [{"thscode": "600519.SH", "table": [...行列表...]}]
-
-    本函数自动探测并兼容以上所有形态。
-    DEBUG 日志会打印原始结构前 600 字符，上线稳定后可删除。
+    以 time 列长度为基准对齐所有列，避免 All arrays must be of the same length。
     """
     errorcode = result.get("errorcode", -1)
     if errorcode != 0:
@@ -97,25 +89,39 @@ def _parse_history_response(result: dict, fmt_code: str) -> pd.DataFrame:
             f"{result.get('errmsg', '未知错误')}"
         )
 
-    # DEBUG：打印原始结构，方便确认真实格式（稳定后可删除这两行）
-    preview = json.dumps(result, ensure_ascii=False)[:600]
-    print(f"  🔍 [DEBUG] iFinD 原始返回预览:\n{preview}\n")
+    def _align(lst, n):
+        """截断或补 None，保证长度 == n"""
+        lst = list(lst) if lst else []
+        if len(lst) >= n:
+            return lst[:n]
+        return lst + [None] * (n - len(lst))
+
+    def _build_df(entry: dict) -> pd.DataFrame:
+        time_list = entry.get("time", [])
+        if not time_list:
+            raise ValueError(f"{fmt_code} 返回时间序列为空")
+        n = len(time_list)
+        return pd.DataFrame({
+            "date":   time_list,
+            "open":   _align(entry.get("open",   []), n),
+            "high":   _align(entry.get("high",   []), n),
+            "low":    _align(entry.get("low",    []), n),
+            "close":  _align(entry.get("close",  []), n),
+            "volume": _align(entry.get("volume", []), n),
+        })
 
     tables_raw = result.get("tables") or result.get("data")
 
     # ── 形态 B：tables 是 list ────────────────────────────────
     if isinstance(tables_raw, list):
-        # 找到匹配 fmt_code 的条目
         stock_entry = None
         for item in tables_raw:
             if not isinstance(item, dict):
                 continue
-            code_key = item.get("thscode") or item.get("code", "")
-            if code_key == fmt_code:
+            if (item.get("thscode") or item.get("code", "")) == fmt_code:
                 stock_entry = item
                 break
 
-        # 单股查询时列表只有一条，直接取
         if stock_entry is None:
             if len(tables_raw) == 1 and isinstance(tables_raw[0], dict):
                 stock_entry = tables_raw[0]
@@ -130,34 +136,15 @@ def _parse_history_response(result: dict, fmt_code: str) -> pd.DataFrame:
 
         # 子形态 B1：行情列直接挂在 stock_entry 上
         if "time" in stock_entry:
-            time_list  = stock_entry.get("time",   [])
-            open_list  = stock_entry.get("open",   [])
-            high_list  = stock_entry.get("high",   [])
-            low_list   = stock_entry.get("low",    [])
-            close_list = stock_entry.get("close",  [])
-            vol_list   = stock_entry.get("volume", [])
-
-            if not time_list:
-                raise ValueError(f"{fmt_code} 返回时间序列为空")
-
-            return pd.DataFrame({
-                "date":   time_list,
-                "open":   open_list,
-                "high":   high_list,
-                "low":    low_list,
-                "close":  close_list,
-                "volume": vol_list,
-            })
+            return _build_df(stock_entry)
 
         # 子形态 B2：行情数据在 stock_entry["table"] 里，是行列表
         raw_table = stock_entry.get("table", [])
         if not raw_table:
             raise ValueError(f"{fmt_code} 的 table 字段为空")
-
         if isinstance(raw_table, list):
             df = pd.DataFrame(raw_table)
             df.columns = [c.lower() for c in df.columns]
-            # 统一日期列名
             if "time" in df.columns and "date" not in df.columns:
                 df = df.rename(columns={"time": "date"})
             return df
@@ -168,30 +155,11 @@ def _parse_history_response(result: dict, fmt_code: str) -> pd.DataFrame:
     if isinstance(tables_raw, dict):
         table = tables_raw.get("table", {})
         stock = table.get(fmt_code, {})
-
         if not stock:
             raise ValueError(
                 f"返回数据中找不到 {fmt_code}，实际 keys: {list(table.keys())}"
             )
-
-        time_list  = stock.get("time",   [])
-        open_list  = stock.get("open",   [])
-        high_list  = stock.get("high",   [])
-        low_list   = stock.get("low",    [])
-        close_list = stock.get("close",  [])
-        vol_list   = stock.get("volume", [])
-
-        if not time_list:
-            raise ValueError(f"{fmt_code} 返回时间序列为空")
-
-        return pd.DataFrame({
-            "date":   time_list,
-            "open":   open_list,
-            "high":   high_list,
-            "low":    low_list,
-            "close":  close_list,
-            "volume": vol_list,
-        })
+        return _build_df(stock)
 
     raise ValueError(
         f"无法识别的 tables 结构: {type(tables_raw)}，"
