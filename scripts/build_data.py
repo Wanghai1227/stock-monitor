@@ -20,7 +20,13 @@ from technical_analysis import (
     calculate_ma, calculate_macd, calculate_rsi,
     calculate_bollinger, calculate_kdj,
     check_signals,
+    # ★ 新增：买卖信号判定 + 关键价位
+    check_buy_signals_card,
+    check_sell_signals_card,
+    calc_key_levels_card,
 )
+# ★ 新增：飞书卡片发送
+from feishu_card import send_signal_card
 
 
 # ==================== 工具函数 ====================
@@ -163,7 +169,7 @@ def _build_push_text(name, symbol, alert, push_cfg):
 
 def process_stock(symbol, name, runtime_cfg, signals_cfg, prefetched_df=None):
     """
-    处理单只股票：拉数据 → 计算指标 → 检测信号 → 返回 alert dict
+    处理单只股票：拉数据 → 计算指标 → 检测信号 → 返回 (alert dict, df)
     prefetched_df: 由 main() 批量预拉取后传入，传入时跳过 API 调用。
     失败时抛出异常，由 main() 统一捕获计入 fail_list。
     """
@@ -198,7 +204,8 @@ def process_stock(symbol, name, runtime_cfg, signals_cfg, prefetched_df=None):
     }
     result = check_signals(df, cfg_for_check)
     if not result or not result.get("signals"):
-        return None
+        # ★ 即使无旧信号，df 也要返回供卖出检测使用
+        return None, df
 
     # ── 构建 alert 条目 ──────────────────────────────────────
     latest = df.iloc[-1]
@@ -237,7 +244,56 @@ def process_stock(symbol, name, runtime_cfg, signals_cfg, prefetched_df=None):
         ],
         "volume_history":   volume_history,
     }
-    return alert
+    # ★ 同时返回 df，供后续卖出信号检测使用
+    return alert, df
+
+
+# ★ 新增：推送飞书卡片（买入 or 卖出），带节流
+def _push_card_signal(symbol, name, df, is_holding, throttle, webhook):
+    """
+    根据 is_holding 决定检测买入还是卖出信号，
+    达到阈值后推送飞书卡片。
+    """
+    if not should_push(f"card_{symbol}", throttle):
+        print(f"    📱 卡片信号: ⏳ 节流中，跳过")
+        return
+
+    price      = float(df.iloc[-1]["close"])
+    change_pct = (df.iloc[-1]["close"] / df.iloc[-2]["close"] - 1) * 100
+    levels     = calc_key_levels_card(df)
+
+    if is_holding:
+        signals   = check_sell_signals_card(df)
+        hit_count = sum(1 for s in signals.values() if s["hit"])
+        if hit_count < 3:
+            print(f"    📱 卡片信号: 卖出共振 {hit_count}/5，未达阈值(3)，跳过")
+            return
+        is_stop_loss = signals["MA"]["hit"] and "跌破" in signals["MA"]["desc"]
+        stype = "sell_loss" if is_stop_loss else "sell_profit"
+        label = "🚨 止损" if is_stop_loss else "💰 止盈"
+    else:
+        signals   = check_buy_signals_card(df)
+        hit_count = sum(1 for s in signals.values() if s["hit"])
+        if hit_count < 4:
+            print(f"    📱 卡片信号: 买入共振 {hit_count}/5，未达阈值(4)，跳过")
+            return
+        stype = "buy"
+        label = "🟢 买入"
+
+    result = send_signal_card(
+        webhook_url  = webhook,
+        stock_code   = symbol,
+        stock_name   = name,
+        price        = price,
+        change_pct   = change_pct,
+        signals      = signals,
+        key_levels   = levels,
+        signal_type  = stype,
+    )
+    if result.get("StatusCode") == 0 or result.get("code") == 0:
+        print(f"    📱 卡片信号: {label} ✅ 推送成功（共振 {hit_count}/5）")
+    else:
+        print(f"    📱 卡片信号: {label} ⚠️  推送结果: {result}")
 
 
 # ==================== 主流程 ====================
@@ -257,6 +313,10 @@ def main():
     min_score   = signals_cfg.get("min_score", 1)
     pretty_json = output_cfg.get("pretty_json", True)
     history_days = runtime_cfg.get("history_days", 60)
+
+    # ★ 新增：从配置读取 webhook 和持仓列表
+    webhook        = os.getenv("FEISHU_WEBHOOK") or push_cfg.get("webhook", "")
+    holding_codes  = set(cfg_all.get("holding", []))   # config.yaml 里新增 holding 节点
 
     data_dir = Path(__file__).parent.parent / output_cfg.get("data_dir", "data")
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -318,13 +378,18 @@ def main():
             continue
 
         try:
-            # 从预拉取结果里取，取不到则传 None 让 process_stock 自行回退
             prefetched_df = data_map.get(symbol)
-            alert = process_stock(
+            # ★ process_stock 现在返回 (alert, df) 两个值
+            alert, df = process_stock(
                 symbol, name, runtime_cfg, signals_cfg,
                 prefetched_df=prefetched_df,
             )
             ok_list.append(symbol)
+
+            # ★ 无论有没有旧信号，都跑卡片信号检测（买入/卖出）
+            if df is not None and len(df) >= 2 and webhook:
+                is_holding = symbol in holding_codes
+                _push_card_signal(symbol, name, df, is_holding, throttle, webhook)
 
             if not alert:
                 print(f"    — {name}: 无信号")
@@ -357,7 +422,7 @@ def main():
             print(f"    ✅ {name}: {sig_count} 个信号，"
                   f"得分 {alert['score']}，趋势 {alert.get('trend')}")
 
-            # ── 飞书推送（带节流）───────────────────────────
+            # ── 原有飞书文本推送（带节流）───────────────────
             if should_push(symbol, throttle):
                 push_text   = _build_push_text(name, symbol, alert, push_cfg)
                 push_result = push_feishu(push_text)
