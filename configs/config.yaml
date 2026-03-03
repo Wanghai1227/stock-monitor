@@ -22,9 +22,9 @@ watchlist:
     name: "通富微电"
   - symbol: "603306"
     name: "华懋科技"
-    - symbol: "688270"
+  - symbol: "688270"
     name: "臻雷科技"
-    - symbol: "002797"
+  - symbol: "002797"
     name: "第一创业"
 
 # 持仓股代码列表（用于触发卖出信号检测）
